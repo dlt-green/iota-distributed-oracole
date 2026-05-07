@@ -416,7 +416,7 @@ export default function TaskSchedulesPage({
     return () => {
       cancelled = true;
     };
-  }, [controls.ownedTaskIds, networkClient, refreshNonce]);
+  }, [controls.ownedTaskIds, data, networkClient, refreshNonce]);
 
   const connectedAddress = normalizeAddress(currentAccount?.address);
   const hasControllerCap = Boolean(controls.controllerCapId);

@@ -32,7 +32,7 @@ export type TaskMultisigValidation = {
   storedAddress: string;
   derivedAddress: string | null;
   addressMatch: boolean;
-  addressStatus: "match" | "stored_is_signer" | "mismatch";
+  addressStatus: "match" | "stored_is_signer" | "mismatch" | "unverifiable";
   derivedError: string | null;
   certificateStatus: "valid" | "below_quorum" | "unknown_signer" | "duplicate_signer" | "empty";
   multisigBytesBase64: string | null;
@@ -197,7 +197,7 @@ export function validateTaskMultisig(
       storedAddress: "",
       derivedAddress: null,
       addressMatch: false,
-      addressStatus: "mismatch",
+      addressStatus: "unverifiable",
       derivedError: "No task loaded.",
       certificateStatus: "empty",
       multisigBytesBase64: null,
@@ -285,11 +285,15 @@ export function validateTaskMultisig(
   const storedMatchesSigner =
     !!normalizedStoredAddress && signerAddresses.some((addr: string) => addr === normalizedStoredAddress);
 
-  let addressStatus: "match" | "stored_is_signer" | "mismatch" = "mismatch";
-  if (normalizedStoredAddress && normalizedDerivedAddress && normalizedStoredAddress === normalizedDerivedAddress) {
+  let addressStatus: TaskMultisigValidation["addressStatus"] = "unverifiable";
+  if (!normalizedStoredAddress || !normalizedDerivedAddress) {
+    addressStatus = "unverifiable";
+  } else if (normalizedStoredAddress === normalizedDerivedAddress) {
     addressStatus = "match";
   } else if (storedMatchesSigner) {
     addressStatus = "stored_is_signer";
+  } else {
+    addressStatus = "mismatch";
   }
 
   const resultHashBytes =

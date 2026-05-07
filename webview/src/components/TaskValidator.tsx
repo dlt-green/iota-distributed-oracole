@@ -965,6 +965,8 @@ export default function TaskValidator({ task, registeredNodes, events = [] }: Pr
               <td>
                 {!validation.storedAddress && !validation.derivedAddress
                   ? "-"
+                  : validation.addressStatus === "unverifiable"
+                    ? "NOT VERIFIABLE"
                   : validation.addressStatus === "match"
                   ? "VALID"
                   : validation.addressStatus === "stored_is_signer"
