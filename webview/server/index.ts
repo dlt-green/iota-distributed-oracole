@@ -3,6 +3,7 @@
 
 import express from "express";
 import cors from "cors";
+import fs from "node:fs";
 import path from "node:path";
 import { IotaClient } from "@iota/iota-sdk/client";
 import {
@@ -894,6 +895,24 @@ app.post("/api/tasks/execute", async (req, res) => {
 });
 
 const distPath = path.resolve(process.cwd(), "dist");
+const indexPath = path.join(distPath, "index.html");
+
+function verifyBuiltAssets() {
+  const indexHtml = fs.readFileSync(indexPath, "utf8");
+  const assetRefs = [...indexHtml.matchAll(/(?:src|href)="\/([^"?#]+)"/g)]
+    .map((match) => match[1])
+    .filter((assetPath) => assetPath.startsWith("assets/"));
+  const missingAssets = assetRefs.filter((assetPath) => !fs.existsSync(path.join(distPath, assetPath)));
+
+  if (missingAssets.length) {
+    throw new Error(`Webview build is missing asset(s): ${missingAssets.join(", ")}`);
+  }
+
+  return assetRefs;
+}
+
+const builtAssetRefs = verifyBuiltAssets();
+
 app.use(
   express.static(distPath, {
     setHeaders(res, filePath) {
@@ -920,7 +939,7 @@ app.get("*", (req, res) => {
     return;
   }
 
-  res.sendFile(path.join(distPath, "index.html"));
+  res.sendFile(indexPath);
 });
 
 app.listen(config.port, "0.0.0.0", () => {
@@ -928,6 +947,8 @@ app.listen(config.port, "0.0.0.0", () => {
   console.log(`[iota_oracle_webview] listening on http://0.0.0.0:${config.port}`);
   console.log(`[iota_oracle_webview] client dir: ${config.oracleClientDir}`);
   console.log(`[iota_oracle_webview] examples dir: ${config.oracleExamplesDir}`);
+  console.log(`[iota_oracle_webview] dist dir: ${distPath}`);
+  console.log(`[iota_oracle_webview] built assets: ${builtAssetRefs.join(", ")}`);
   console.log(`[iota_oracle_webview] env cwd: ${envDebug.cwd}`);
   console.log(`[iota_oracle_webview] active network: ${getActiveNetwork()}`);
   console.log(`[iota_oracle_webview] supported networks: ${getSupportedNetworks().join(", ")}`);
