@@ -191,10 +191,13 @@ esac
 
 log "Starting update for $NETWORK"
 require_cmd git
-require_cmd npm
 
 if [[ "$SKIP_DOCKER" == 0 ]]; then
   require_cmd docker
+fi
+
+if [[ "$SKIP_LOCAL_BUILD" == 0 ]]; then
+  require_cmd npm
 fi
 
 if [[ "$SKIP_GIT" == 0 ]]; then
