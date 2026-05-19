@@ -72,6 +72,10 @@ export function getClockId(): string {
   return (envByNetwork("IOTA_CLOCK_OBJECT_ID") || envByNetwork("IOTA_CLOCK_ID") || "0x6").trim() || "0x6";
 }
 
+export function getIotaSystemStateId(): string {
+  return (envByNetwork("IOTA_SYSTEM_STATE_ID") || "0x5").trim() || "0x5";
+}
+
 export function getTaskSchedulerQueueId(): string {
   return mustEnvByNetwork("ORACLE_TASK_SCHEDULER_QUEUE_ID");
 }

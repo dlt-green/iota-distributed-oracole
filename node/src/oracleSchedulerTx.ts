@@ -6,8 +6,10 @@ import { Transaction } from "@iota/iota-sdk/transactions";
 import { bcsU64 } from "./bcs";
 import {
   getClockId,
+  getIotaSystemStateId,
   getRandomId,
   getStateId,
+  getSystemPackageId,
   getTaskRegistryId,
   getTaskSchedulerQueueId,
   getTasksPackageId,
@@ -27,6 +29,27 @@ function gasBudget(envKey: string, def: number): number {
 
 function tasksPkg(): string {
   return getTasksPackageId();
+}
+
+export async function pruneOracleNodesByValidatorCommitteeTx(ctx: NodeContext): Promise<string> {
+  const stateId = getStateId();
+  const nodeRegistryId = await resolveNodeRegistryId(ctx.client, stateId);
+  const res = await signAndExecuteWithLockRetry({
+    client: ctx.client,
+    signer: ctx.identity.keypair,
+    transactionFactory: () => {
+      const tx = new Transaction();
+      tx.setGasBudget(gasBudget("GAS_BUDGET_ORACLE_NODE_PRUNE", gasBudget("GAS_BUDGET", 20_000_000)));
+      tx.moveCall({
+        target: `${getSystemPackageId()}::systemState::prune_oracle_nodes_if_epoch_changed`,
+        arguments: [tx.object(nodeRegistryId), tx.object(stateId), tx.object(getIotaSystemStateId())],
+      });
+      return tx;
+    },
+    options: { showEffects: true, showObjectChanges: true },
+    label: "prune_oracle_nodes_if_epoch_changed",
+  });
+  return String(res.digest);
 }
 
 export async function reconcileSchedulerQueueTx(ctx: NodeContext): Promise<string> {

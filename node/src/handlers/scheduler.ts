@@ -6,6 +6,7 @@ import { assertCommitteeMultisigAddress, buildMultiSigPublicKey } from "../multi
 import {
   advanceSchedulerQueueTx,
   completeSchedulerRoundTx,
+  pruneOracleNodesByValidatorCommitteeTx,
   reconcileSchedulerQueueTx,
   startSchedulerRoundTx,
   submitTaskRunTx,
@@ -219,13 +220,31 @@ export async function processSchedulerRound(ctx: NodeContext): Promise<void> {
     if (queue.headNodeId !== myNode.nodeId) return;
   }
 
+  try {
+    const digest = await pruneOracleNodesByValidatorCommitteeTx(ctx);
+    console.log(`[scheduler ${ctx.nodeId}] prune non-committee delegated nodes tx=${digest}`);
+  } catch (e: any) {
+    console.warn(`[scheduler ${ctx.nodeId}] prune non-committee delegated nodes failed: ${String(e?.message ?? e)}`);
+    return;
+  }
+
+  const maxTasks = optInt("SCHEDULER_MAX_TASKS_PER_ROUND", 100);
+  const dueTasks = (await listDueTasks(ctx.client, nowMs)).slice(0, maxTasks);
+  console.log(`[scheduler ${ctx.nodeId}] due tasks=${dueTasks.length}`);
+  if (dueTasks.length === 0) {
+    try {
+      const digest = await advanceSchedulerQueueTx(ctx);
+      console.log(`[scheduler ${ctx.nodeId}] advance queue tx=${digest}`);
+    } catch (e: any) {
+      console.warn(`[scheduler ${ctx.nodeId}] idle advance failed: ${String(e?.message ?? e)}`);
+    }
+    return;
+  }
+
   const startDigest = await startSchedulerRoundTx(ctx);
   console.log(`[scheduler ${ctx.nodeId}] start round tx=${startDigest}`);
 
   try {
-    const maxTasks = optInt("SCHEDULER_MAX_TASKS_PER_ROUND", 100);
-    const dueTasks = (await listDueTasks(ctx.client, nowMs)).slice(0, maxTasks);
-    console.log(`[scheduler ${ctx.nodeId}] due tasks=${dueTasks.length}`);
     for (const task of dueTasks) {
       try {
         const digest = await submitTaskRunTx(ctx, task.id);
