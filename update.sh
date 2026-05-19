@@ -12,6 +12,7 @@ SKIP_DOCKER=0
 INCLUDE_WEBVIEW=1
 INCLUDE_TRAEFIK=0
 DEVNET_COMPOSE=0
+REMOVE_ORPHANS=0
 
 usage() {
   cat <<'EOF'
@@ -29,6 +30,7 @@ Options:
   --skip-docker                 Do not rebuild/restart Docker services
   --no-webview                  Do not update the webview Docker service
   --with-traefik                Also update the traefik Docker service
+  --remove-orphans              Remove Compose orphan containers during Docker update
   -h, --help                    Show this help
 EOF
 }
@@ -46,9 +48,9 @@ require_cmd() {
 
 compose() {
   if docker compose version >/dev/null 2>&1; then
-    docker compose "$@"
+    env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE docker compose "$@"
   elif command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "$@"
+    env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE docker-compose "$@"
   else
     echo "Missing Docker Compose. Install 'docker compose' or 'docker-compose'." >&2
     exit 1
@@ -119,14 +121,19 @@ npm_install_and_build() {
 docker_up() {
   local compose_file="$1"
   local project_dir="$2"
+  local args=(up --build -d)
 
   if [[ ! -f "$compose_file" ]]; then
     echo "Compose file not found: $compose_file" >&2
     exit 1
   fi
 
+  if [[ "$REMOVE_ORPHANS" == 1 ]]; then
+    args+=(--remove-orphans)
+  fi
+
   log "Updating Docker services from $compose_file"
-  (cd "$project_dir" && compose -f "$(basename "$compose_file")" up --build -d --remove-orphans)
+  (cd "$project_dir" && compose -f "$(basename "$compose_file")" "${args[@]}")
 }
 
 while [[ $# -gt 0 ]]; do
@@ -161,6 +168,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --with-traefik)
       INCLUDE_TRAEFIK=1
+      shift
+      ;;
+    --remove-orphans)
+      REMOVE_ORPHANS=1
       shift
       ;;
     --no-traefik)
