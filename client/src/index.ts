@@ -1156,8 +1156,7 @@ function extractTaskIdFromTx(res: any): string {
   const createdTask = oc.find(
     (c) =>
       c.type === "created" &&
-      String(c.objectType ?? "").includes("::oracle_tasks::Task") &&
-      !String(c.objectType ?? "").includes("TaskOwnerCap"),
+      String(c.objectType ?? "").endsWith("::oracle_tasks::Task"),
   );
   const byTaskObj = String(createdTask?.objectId ?? "").trim();
   if (byTaskObj) return byTaskObj;
