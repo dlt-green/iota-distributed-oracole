@@ -8,10 +8,11 @@ import { publishNoCommit } from "../taskSignFlow";
 import type { NodeContext } from "../nodeContext";
 import { assertCommitteeMultisigAddress, buildMultiSigPublicKey } from "../multisig.js";
 import { loadPubkeysByAddrB64 } from "../services/pubkeys";
-import { readRegisteredOracleNodeByAddr } from "../services/schedulerReader";
+import { readNodeRegistrySnapshot, readRegisteredOracleNodeByAddr } from "../services/schedulerReader";
 import { loadLatestTaskResult, loadTaskBundle, isTaskFreshForNode, taskCreatedAtMs } from "../services/taskObjects";
 import { savePersistedAcceptedTemplateIds } from "../templateState";
 import { moveToArray, moveToString } from "../utils/move";
+import { sleep } from "../utils/sleep";
 import {
   abortTaskWithCertificate,
   consensusMessage,
@@ -33,6 +34,30 @@ import { extractNumericScale, extractNumericValue, toConsensusU64 } from "../uti
 
 function leaderOrder(assigned: string[]): string[] {
   return [...assigned].map((x) => x.toLowerCase()).sort();
+}
+
+async function finalizeOrderByNodeId(
+  client: NodeContext["client"],
+  assigned: string[],
+): Promise<string[]> {
+  const assignedSet = new Set(assigned.map((x) => x.toLowerCase()).filter(Boolean));
+  const registry = await readNodeRegistrySnapshot(client).catch((error) => {
+    console.warn(`[finalize] node-id order unavailable, falling back to address order: ${String((error as any)?.message ?? error)}`);
+    return null;
+  });
+  if (!registry) return leaderOrder(assigned);
+
+  const known = registry.nodes
+    .filter((node) => assignedSet.has(node.addr))
+    .sort((a, b) => a.nodeId - b.nodeId || a.addr.localeCompare(b.addr))
+    .map((node) => node.addr);
+
+  const knownSet = new Set(known);
+  const unknown = [...assignedSet]
+    .filter((addr) => !knownSet.has(addr))
+    .sort();
+
+  return [...known, ...unknown];
 }
 
 async function deriveAssignedCommitteeMultisigAddress(
@@ -214,7 +239,7 @@ export async function runConsensusRound(
   const pollMs = optInt("ROUND_POLL_MS", 1_200);
   const resultBytes = new TextEncoder().encode(normalized);
   const resultHashHex = sha256Hex(resultBytes);
-  const leaders = leaderOrder(assignedNodes);
+  const leaders = await finalizeOrderByNodeId(client, assignedNodes);
   const leaderAddr = leaders[0] ?? "";
 
   const tx2 = await publishCommit({ client, keypair: identity.keypair, taskId, round, resultHashHex });
@@ -393,7 +418,29 @@ export async function runConsensusRound(
   }
 
   const chosenSigners = [...partials.partials.keys()].sort();
-  if (myAddr !== leaderAddr) return true;
+  const finalizeIndex = leaders.indexOf(myAddr);
+  if (finalizeIndex < 0) {
+    console.warn(`[node ${nodeId}] skip finalize task=${taskId} reason=not_in_finalize_order me=${myAddr}`);
+    return false;
+  }
+
+  const takeoverSlotMs = Math.max(0, optInt("FINALIZE_TAKEOVER_TIMEOUT_MS", 15_000));
+  const finalizeDelayMs = finalizeIndex * takeoverSlotMs;
+  if (finalizeDelayMs > 0) {
+    console.log(
+      `[node ${nodeId}] finalize backup slot task=${taskId} index=${finalizeIndex} delay_ms=${finalizeDelayMs} leader=${leaderAddr}`,
+    );
+    await sleep(finalizeDelayMs);
+
+    const latest = await loadTaskBundle(client, taskId);
+    const latestExecutionState = Number(latest.taskFields.execution_state ?? -1);
+    if (latestExecutionState !== 1) {
+      console.log(
+        `[node ${nodeId}] skip backup finalize task=${taskId} reason=already_closed execution_state=${latestExecutionState}`,
+      );
+      return true;
+    }
+  }
 
   // La committee multisig del task e' definita dall'intero assigned set + quorum_k.
   // I chosen signers servono per aggregare abbastanza firme da soddisfare la soglia.
@@ -482,7 +529,18 @@ export async function runConsensusRound(
   });
 
   if (digest) console.log(`[node ${nodeId}] finalize tx=${digest}`);
-  return Boolean(digest);
+  if (digest) return true;
+
+  const latest = await loadTaskBundle(client, taskId).catch(() => null);
+  const latestExecutionState = Number(latest?.taskFields?.execution_state ?? -1);
+  if (latestExecutionState !== 1) {
+    console.log(
+      `[node ${nodeId}] finalize already handled by another node task=${taskId} execution_state=${latestExecutionState}`,
+    );
+    return true;
+  }
+
+  return false;
 }
 
 async function maybeAbortCommitNoQuorum(opts: {
