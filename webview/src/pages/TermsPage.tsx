@@ -7,7 +7,8 @@ type InlineNode =
   | { type: "text"; value: string }
   | { type: "strong"; value: string }
   | { type: "em"; value: string }
-  | { type: "code"; value: string };
+  | { type: "code"; value: string }
+  | { type: "link"; label: string; href: string };
 
 type Block =
   | { type: "heading"; level: 1 | 2 | 3; text: string }
@@ -16,7 +17,7 @@ type Block =
 
 function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g;
+  const pattern = /(\[[^\]\n]+\]\((?:https?:\/\/|mailto:)[^) \n]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g;
   let lastIndex = 0;
 
   for (const match of text.matchAll(pattern)) {
@@ -26,7 +27,14 @@ function parseInline(text: string): InlineNode[] {
     }
 
     const token = match[0];
-    if (token.startsWith("**") && token.endsWith("**")) {
+    if (token.startsWith("[") && token.includes("](") && token.endsWith(")")) {
+      const closeLabelIndex = token.indexOf("](");
+      nodes.push({
+        type: "link",
+        label: token.slice(1, closeLabelIndex),
+        href: token.slice(closeLabelIndex + 2, -1),
+      });
+    } else if (token.startsWith("**") && token.endsWith("**")) {
       nodes.push({ type: "strong", value: token.slice(2, -2) });
     } else if (token.startsWith("`") && token.endsWith("`")) {
       nodes.push({ type: "code", value: token.slice(1, -1) });
@@ -54,6 +62,13 @@ function renderInline(text: string) {
     }
     if (node.type === "code") {
       return <code key={index}>{node.value}</code>;
+    }
+    if (node.type === "link") {
+      return (
+        <a key={index} className="terms-inline-link" href={node.href} target="_blank" rel="noreferrer">
+          {node.label}
+        </a>
+      );
     }
     return <Fragment key={index}>{node.value}</Fragment>;
   });
