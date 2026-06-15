@@ -60,6 +60,49 @@ async function finalizeOrderByNodeId(
   return [...known, ...unknown];
 }
 
+function isLiveExecutionState(state: number): boolean {
+  return state === 1 || state === 2;
+}
+
+async function waitForOrderedActionTurn(opts: {
+  client: NodeContext["client"];
+  taskId: string;
+  nodeId: string;
+  myAddr: string;
+  order: string[];
+  action: string;
+  slotMs: number;
+}): Promise<boolean> {
+  const { client, taskId, nodeId, myAddr, order, action, slotMs } = opts;
+  const actionIndex = order.indexOf(myAddr);
+  if (actionIndex < 0) {
+    console.warn(`[node ${nodeId}] skip ${action} task=${taskId} reason=not_in_action_order me=${myAddr}`);
+    return false;
+  }
+
+  const delayMs = actionIndex * Math.max(0, slotMs);
+  if (delayMs > 0) {
+    console.log(
+      `[node ${nodeId}] ${action} backup slot task=${taskId} index=${actionIndex} delay_ms=${delayMs} leader=${order[0] ?? "-"}`,
+    );
+    await sleep(delayMs);
+  }
+
+  const latest = await loadTaskBundle(client, taskId).catch((error) => {
+    console.warn(`[node ${nodeId}] ${action} state recheck failed task=${taskId}: ${String((error as any)?.message ?? error)}`);
+    return null;
+  });
+  const latestExecutionState = Number(latest?.taskFields?.execution_state ?? -1);
+  if (!isLiveExecutionState(latestExecutionState)) {
+    console.log(
+      `[node ${nodeId}] skip ${action} task=${taskId} reason=already_closed execution_state=${latestExecutionState}`,
+    );
+    return false;
+  }
+
+  return true;
+}
+
 async function deriveAssignedCommitteeMultisigAddress(
   client: NodeContext["client"],
   assignedNodes: string[],
@@ -237,6 +280,10 @@ export async function runConsensusRound(
 
   const waitMs = optInt("ROUND_WAIT_MS", 45_000);
   const pollMs = optInt("ROUND_POLL_MS", 1_200);
+  const takeoverSlotMs = Math.max(
+    0,
+    optInt("ABORT_TAKEOVER_TIMEOUT_MS", optInt("FINALIZE_TAKEOVER_TIMEOUT_MS", 15_000)),
+  );
   const resultBytes = new TextEncoder().encode(normalized);
   const resultHashHex = sha256Hex(resultBytes);
   const leaders = await finalizeOrderByNodeId(client, assignedNodes);
@@ -247,7 +294,15 @@ export async function runConsensusRound(
 
   const commits = await waitForCommitQuorum({ client, taskId, round, assignedNodes, quorumK, waitMs, pollMs, minTimestampMs: runStartedAtMs });
   if (!commits.ok) {
-    if (myAddr === leaderAddr) {
+    if (await waitForOrderedActionTurn({
+      client,
+      taskId,
+      nodeId,
+      myAddr,
+      order: leaders,
+      action: "abort-commit",
+      slotMs: takeoverSlotMs,
+    })) {
       const reasonCode = commits.reason === "no_quorum" ? 1004 : 1002;
       const signerAddrs = leaders.slice(0, quorumK);
       const multisigAddr = await deriveAssignedCommitteeMultisigAddress(
@@ -307,7 +362,7 @@ export async function runConsensusRound(
     console.log(`[node ${nodeId}] no winning reveal: ${reveal.reason}`);
     let mediationStarted = false;
 
-    if (reveal.reason === "no_quorum" && mediationMode === 1 && myAddr === leaderAddr && reveal.reveals) {
+    if (reveal.reason === "no_quorum" && mediationMode === 1 && reveal.reveals) {
       const numericValues = [...reveal.reveals.values()]
         .filter((m) => Number(m.value1 ?? 0) === 1)
         .map((m) => Number(m.value0 ?? 0))
@@ -316,13 +371,23 @@ export async function runConsensusRound(
       if (numericValues.length >= quorumK) {
         const mean = meanFloor(numericValues);
         const variance = varianceSpread(numericValues);
-        const seed = new TextEncoder().encode(`[${mean}]`);
-        const md = await startMediation({
+        const canStartMediation = await waitForOrderedActionTurn({
           client,
-          keypair: identity.keypair,
           taskId,
-          observedVariance: variance,
-        }).catch(() => null);
+          nodeId,
+          myAddr,
+          order: leaders,
+          action: "start-mediation",
+          slotMs: takeoverSlotMs,
+        });
+        const md = canStartMediation
+          ? await startMediation({
+              client,
+              keypair: identity.keypair,
+              taskId,
+              observedVariance: variance,
+            }).catch(() => null)
+          : null;
 
         if (md) {
           mediationStarted = true;
@@ -332,7 +397,24 @@ export async function runConsensusRound(
       }
     }
 
-    if (myAddr === leaderAddr && !mediationStarted) {
+    if (!mediationStarted && reveal.reason === "no_quorum" && mediationMode === 1) {
+      const latest = await loadTaskBundle(client, taskId).catch(() => null);
+      const latestExecutionState = Number(latest?.taskFields?.execution_state ?? -1);
+      if (latestExecutionState === 2) {
+        console.log(`[node ${nodeId}] skip abort-reveal task=${taskId} reason=mediation_already_started`);
+        return false;
+      }
+    }
+
+    if (!mediationStarted && await waitForOrderedActionTurn({
+      client,
+      taskId,
+      nodeId,
+      myAddr,
+      order: leaders,
+      action: "abort-reveal",
+      slotMs: takeoverSlotMs,
+    })) {
       const reasonCode = reveal.reason === "reveal_timeout" ? 1002 : 1003;
       const signerAddrs = leaders.slice(0, quorumK);
       const multisigAddr = await deriveAssignedCommitteeMultisigAddress(
@@ -392,7 +474,15 @@ export async function runConsensusRound(
   });
 
   if (!partials.ok) {
-    if (myAddr === leaderAddr) {
+    if (await waitForOrderedActionTurn({
+      client,
+      taskId,
+      nodeId,
+      myAddr,
+      order: leaders,
+      action: "abort-partial",
+      slotMs: takeoverSlotMs,
+    })) {
       const signerAddrs = leaders.slice(0, quorumK);
       const multisigAddr = await deriveAssignedCommitteeMultisigAddress(
         client,
@@ -424,8 +514,8 @@ export async function runConsensusRound(
     return false;
   }
 
-  const takeoverSlotMs = Math.max(0, optInt("FINALIZE_TAKEOVER_TIMEOUT_MS", 15_000));
-  const finalizeDelayMs = finalizeIndex * takeoverSlotMs;
+  const finalizeTakeoverSlotMs = Math.max(0, optInt("FINALIZE_TAKEOVER_TIMEOUT_MS", 15_000));
+  const finalizeDelayMs = finalizeIndex * finalizeTakeoverSlotMs;
   if (finalizeDelayMs > 0) {
     console.log(
       `[node ${nodeId}] finalize backup slot task=${taskId} index=${finalizeIndex} delay_ms=${finalizeDelayMs} leader=${leaderAddr}`,
@@ -434,7 +524,7 @@ export async function runConsensusRound(
 
     const latest = await loadTaskBundle(client, taskId);
     const latestExecutionState = Number(latest.taskFields.execution_state ?? -1);
-    if (latestExecutionState !== 1) {
+    if (!isLiveExecutionState(latestExecutionState)) {
       console.log(
         `[node ${nodeId}] skip backup finalize task=${taskId} reason=already_closed execution_state=${latestExecutionState}`,
       );
@@ -533,7 +623,7 @@ export async function runConsensusRound(
 
   const latest = await loadTaskBundle(client, taskId).catch(() => null);
   const latestExecutionState = Number(latest?.taskFields?.execution_state ?? -1);
-  if (latestExecutionState !== 1) {
+  if (!isLiveExecutionState(latestExecutionState)) {
     console.log(
       `[node ${nodeId}] finalize already handled by another node task=${taskId} execution_state=${latestExecutionState}`,
     );
@@ -552,15 +642,28 @@ async function maybeAbortCommitNoQuorum(opts: {
 }) {
   const { ctx, taskId, round, assignedNodes, quorumK } = opts;
   const { client, identity, nodeId, myAddr } = ctx;
-  const leaders = leaderOrder(assignedNodes);
-  const leaderAddr = leaders[0] ?? "";
-  if (myAddr !== leaderAddr) return;
+  const leaders = await finalizeOrderByNodeId(client, assignedNodes);
 
   const waitMs = optInt("ROUND_WAIT_MS", 45_000);
   const pollMs = optInt("ROUND_POLL_MS", 1_200);
   const runStartedAtMs = Number((await loadTaskBundle(client, taskId)).taskFields?.last_run_ms ?? 0) || 0;
   const commits = await waitForCommitQuorum({ client, taskId, round, assignedNodes, quorumK, waitMs, pollMs, minTimestampMs: runStartedAtMs });
   if (commits.ok) return;
+  const takeoverSlotMs = Math.max(
+    0,
+    optInt("ABORT_TAKEOVER_TIMEOUT_MS", optInt("FINALIZE_TAKEOVER_TIMEOUT_MS", 15_000)),
+  );
+  if (!await waitForOrderedActionTurn({
+    client,
+    taskId,
+    nodeId,
+    myAddr,
+    order: leaders,
+    action: "abort-commit",
+    slotMs: takeoverSlotMs,
+  })) {
+    return;
+  }
 
   const reasonCode = commits.reason === "no_quorum" ? 1004 : 1002;
   const signerAddrs = leaders.slice(0, quorumK);
