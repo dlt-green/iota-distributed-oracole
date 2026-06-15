@@ -128,11 +128,8 @@ docker_up() {
   (cd "$project_dir" && compose -f "$(basename "$compose_file")" "${args[@]}")
 }
 
-# =====================================================
-# NEU: Docker Secrets vorbereiten (Private Key)
-# =====================================================
 prepare_docker_secrets() {
-  local compose_dir="$1"           # z.B. "node"
+  local compose_dir="$1"
   local env_file="${compose_dir}/.env"
   local secret_file="${compose_dir}/privatekey.txt"
 
@@ -144,7 +141,6 @@ prepare_docker_secrets() {
   log "🔐 Bereite Docker Secret für NODE_1_PRIVATEKEY vor..."
 
   if grep -qE '^NODE_1_PRIVATEKEY=' "$env_file"; then
-    # Key extrahieren (alles nach dem ersten =)
     grep -E '^NODE_1_PRIVATEKEY=' "$env_file" | cut -d'=' -f2- > "$secret_file"
 
     chmod 600 "$secret_file"
@@ -156,10 +152,6 @@ prepare_docker_secrets() {
     [[ -f "$secret_file" ]] && rm -f "$secret_file"
   fi
 }
-
-# =====================================================
-# Hauptlogik
-# =====================================================
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -276,7 +268,6 @@ if [[ "$SKIP_DOCKER" == 0 ]]; then
     NODE_COMPOSE="docker-compose_devnet.yml"
   fi
 
-  # === Docker Secrets vorbereiten (Private Key) ===
   prepare_docker_secrets "node"
 
   docker_up "node/$NODE_COMPOSE" "node"
