@@ -17,21 +17,20 @@ REMOVE_ORPHANS=0
 usage() {
   cat <<'EOF'
 Usage: ./update.sh [options]
-
 Updates the oracle node checkout, environment values, dependencies, builds, and
 Docker services.
 
 Options:
-  --network auto|testnet|devnet  Env sync script to run (default: auto)
-  --devnet-compose              Use node/docker-compose_devnet.yml for nodes
-  --skip-git                    Do not run git pull
-  --skip-env                    Do not run move/<network>/update_<network>_envs.sh
-  --skip-local-build            Do not run npm ci / npm build locally
-  --skip-docker                 Do not rebuild/restart Docker services
-  --no-webview                  Do not update the webview Docker service
-  --with-traefik                Also update the traefik Docker service
-  --remove-orphans              Remove Compose orphan containers during Docker update
-  -h, --help                    Show this help
+  --network auto|testnet|devnet   Env sync script to run (default: auto)
+  --devnet-compose                Use node/docker-compose_devnet.yml for nodes
+  --skip-git                      Do not run git pull
+  --skip-env                      Do not run move/<network>/update_<network>_envs.sh
+  --skip-local-build              Do not run npm ci / npm build locally
+  --skip-docker                   Do not rebuild/restart Docker services
+  --no-webview                    Do not update the webview Docker service
+  --with-traefik                  Also update the traefik Docker service
+  --remove-orphans                Remove Compose orphan containers during Docker update
+  -h, --help                      Show this help
 EOF
 }
 
@@ -91,7 +90,6 @@ detect_network() {
 backup_envs() {
   local backup_dir=".update-backups/$(date '+%Y%m%d-%H%M%S')"
   local copied=0
-
   for file in node/.env webview/.env client/.env traefik/.env; do
     if [[ -f "$file" ]]; then
       mkdir -p "$backup_dir/$(dirname "$file")"
@@ -99,7 +97,6 @@ backup_envs() {
       copied=1
     fi
   done
-
   if [[ "$copied" == 1 ]]; then
     echo "Env backup written to $backup_dir"
   fi
@@ -108,10 +105,8 @@ backup_envs() {
 npm_install_and_build() {
   local dir="$1"
   [[ -f "$dir/package.json" ]] || return 0
-
   log "Installing dependencies in $dir"
   (cd "$dir" && npm ci)
-
   if (cd "$dir" && npm run | grep -qE '^[[:space:]]+build$|^[[:space:]]+build[[:space:]]'); then
     log "Building $dir"
     (cd "$dir" && npm run build)
@@ -122,19 +117,49 @@ docker_up() {
   local compose_file="$1"
   local project_dir="$2"
   local args=(up --build -d)
-
   if [[ ! -f "$compose_file" ]]; then
     echo "Compose file not found: $compose_file" >&2
     exit 1
   fi
-
   if [[ "$REMOVE_ORPHANS" == 1 ]]; then
     args+=(--remove-orphans)
   fi
-
   log "Updating Docker services from $compose_file"
   (cd "$project_dir" && compose -f "$(basename "$compose_file")" "${args[@]}")
 }
+
+# =====================================================
+# NEU: Docker Secrets vorbereiten (Private Key)
+# =====================================================
+prepare_docker_secrets() {
+  local compose_dir="$1"           # z.B. "node"
+  local env_file="${compose_dir}/.env"
+  local secret_file="${compose_dir}/privatekey.txt"
+
+  if [[ ! -f "$env_file" ]]; then
+    log "⚠️  Keine .env Datei gefunden unter $env_file"
+    return 0
+  fi
+
+  log "🔐 Bereite Docker Secret für NODE_1_PRIVATEKEY vor..."
+
+  if grep -qE '^NODE_1_PRIVATEKEY=' "$env_file"; then
+    # Key extrahieren (alles nach dem ersten =)
+    grep -E '^NODE_1_PRIVATEKEY=' "$env_file" | cut -d'=' -f2- > "$secret_file"
+
+    chmod 600 "$secret_file"
+    chown root:docker "$secret_file" 2>/dev/null || true
+
+    log "✅ Docker Secret privatekey.txt erstellt (aus .env)"
+  else
+    log "⚠️  NODE_1_PRIVATEKEY nicht in .env gefunden"
+    [[ -f "$secret_file" ]] && rm -f "$secret_file"
+  fi
+}
+
+# =====================================================
+# Hauptlogik
+# =====================================================
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -201,12 +226,11 @@ case "$NETWORK" in
 esac
 
 log "Starting update for $NETWORK"
-require_cmd git
 
+require_cmd git
 if [[ "$SKIP_DOCKER" == 0 ]]; then
   require_cmd docker
 fi
-
 if [[ "$SKIP_LOCAL_BUILD" == 0 ]]; then
   require_cmd npm
 fi
@@ -251,6 +275,10 @@ if [[ "$SKIP_DOCKER" == 0 ]]; then
   if [[ "$DEVNET_COMPOSE" == 1 ]]; then
     NODE_COMPOSE="docker-compose_devnet.yml"
   fi
+
+  # === Docker Secrets vorbereiten (Private Key) ===
+  prepare_docker_secrets "node"
+
   docker_up "node/$NODE_COMPOSE" "node"
 
   if [[ "$INCLUDE_WEBVIEW" == 1 ]]; then
