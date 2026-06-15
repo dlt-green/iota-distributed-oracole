@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   oracle-node-1:
     build:
@@ -8,16 +10,40 @@ services:
     init: true
     stop_signal: SIGTERM
     stop_grace_period: 120s
+
     env_file:
       - .env
+
     environment:
       NODE_ID: "1"
       NODE_OPTIONS: --dns-result-order=ipv4first
+      # Private Key wird jetzt sicher als Docker Secret bereitgestellt
+      # (nicht mehr als Environment-Variable sichtbar)
+      NODE_1_PRIVATEKEY_FILE: /run/secrets/node_privatekey
+
+    secrets:
+      - node_privatekey
+
     dns:
       - 1.1.1.1
       - 8.8.8.8
+
     ports:
       - "127.0.0.1:9080:9080"
+
     command: ["node", "--import", "tsx", "src/index.ts", "--node", "1"]
-    volumes:
-      - ./keys:/app/keys
+
+    # Optional: Healthcheck (falls du einen hast)
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:9080/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s
+
+# =====================================================
+# Docker Secrets (Private Key)
+# =====================================================
+secrets:
+  node_privatekey:
+    file: ./privatekey.txt
