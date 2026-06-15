@@ -32,6 +32,7 @@ import { processMediationStarted } from "./handlers/mediationStarted";
 import { startMonitorServer, type MonitorRuntimeState } from "./monitor";
 import type { NodeContext } from "./nodeContext";
 import { startSchedulerWorker } from "./services/schedulerWorker";
+import { startTemplateHealthWorker } from "./services/templateHealthWorker";
 import { loadPersistedAcceptedTemplateIds } from "./templateState";
 import { sleep } from "./utils/sleep";
 
@@ -230,6 +231,7 @@ async function main() {
   startListeners(ctx);
   void replayRecentAssignments(ctx);
   startSchedulerWorker(ctx);
+  startTemplateHealthWorker(ctx);
   runtimeState.listenersStarted = true;
   runtimeState.booting = false;
 
